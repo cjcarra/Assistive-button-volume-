@@ -1,0 +1,6 @@
+{
+  "name": "Assistive Volume",
+  "description": "An assistive, floating draggable on-screen volume control overlay with customizable visual themes and smart docked-hiding.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
