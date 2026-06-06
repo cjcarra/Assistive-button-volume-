@@ -88,6 +88,8 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
     private var lastButtonX = -1
     private var lastButtonY = -1
     private val previousVolumes = mutableMapOf<Int, Int>()
+    private val lastSetTime = mutableMapOf<Int, Long>()
+    private val lastSetValue = mutableMapOf<Int, Int>()
 
     private val handler = Handler(Looper.getMainLooper())
     private var idleRunnable: Runnable? = null
@@ -160,25 +162,53 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
     }
 
     private fun syncVolumes() {
-        mediaVolume.value = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        val now = System.currentTimeMillis()
+
+        if (now - (lastSetTime[AudioManager.STREAM_MUSIC] ?: 0) > 1000) {
+            mediaVolume.value = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+        } else {
+            mediaVolume.value = lastSetValue[AudioManager.STREAM_MUSIC] ?: mediaVolume.value
+        }
         maxMediaVolume.value = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
 
-        ringVolume.value = audioManager.getStreamVolume(AudioManager.STREAM_RING)
+        if (now - (lastSetTime[AudioManager.STREAM_RING] ?: 0) > 1000) {
+            ringVolume.value = audioManager.getStreamVolume(AudioManager.STREAM_RING)
+        } else {
+            ringVolume.value = lastSetValue[AudioManager.STREAM_RING] ?: ringVolume.value
+        }
         maxRingVolume.value = audioManager.getStreamMaxVolume(AudioManager.STREAM_RING).coerceAtLeast(1)
 
-        notificationVolume.value = audioManager.getStreamVolume(AudioManager.STREAM_NOTIFICATION)
+        if (now - (lastSetTime[AudioManager.STREAM_NOTIFICATION] ?: 0) > 1000) {
+            notificationVolume.value = audioManager.getStreamVolume(AudioManager.STREAM_NOTIFICATION)
+        } else {
+            notificationVolume.value = lastSetValue[AudioManager.STREAM_NOTIFICATION] ?: notificationVolume.value
+        }
         maxNotificationVolume.value = audioManager.getStreamMaxVolume(AudioManager.STREAM_NOTIFICATION).coerceAtLeast(1)
 
-        alarmVolume.value = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+        if (now - (lastSetTime[AudioManager.STREAM_ALARM] ?: 0) > 1000) {
+            alarmVolume.value = audioManager.getStreamVolume(AudioManager.STREAM_ALARM)
+        } else {
+            alarmVolume.value = lastSetValue[AudioManager.STREAM_ALARM] ?: alarmVolume.value
+        }
         maxAlarmVolume.value = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM).coerceAtLeast(1)
     }
 
     private fun updateStreamVolume(stream: Int, value: Int) {
         try {
+            // Update local fields instantly for snappy visual feedback without race condition
+            when (stream) {
+                AudioManager.STREAM_MUSIC -> mediaVolume.value = value
+                AudioManager.STREAM_RING -> ringVolume.value = value
+                AudioManager.STREAM_NOTIFICATION -> notificationVolume.value = value
+                AudioManager.STREAM_ALARM -> alarmVolume.value = value
+            }
+            lastSetTime[stream] = System.currentTimeMillis()
+            lastSetValue[stream] = value
+
             audioManager.setStreamVolume(stream, value, 0)
             syncVolumes()
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (t: Throwable) {
+            t.printStackTrace()
         }
     }
 
@@ -813,6 +843,13 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
                             onValueChange(intVal)
                         }
                     },
+                    onValueChangeFinished = {
+                        try {
+                            audioManager.setStreamVolume(streamType, value, AudioManager.FLAG_PLAY_SOUND)
+                        } catch (t: Throwable) {
+                            t.printStackTrace()
+                        }
+                    },
                     colors = SliderDefaults.colors(
                         activeTrackColor = theme.primary,
                         inactiveTrackColor = theme.primary.copy(alpha = 0.2f),
@@ -867,25 +904,55 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
     }
 
     private fun toggleAudioMode(mode: AudioMode) {
-        when (mode) {
-            AudioMode.MUTE -> {
-                updateStreamVolume(AudioManager.STREAM_MUSIC, 0)
-                updateStreamVolume(AudioManager.STREAM_RING, 0)
-                updateStreamVolume(AudioManager.STREAM_NOTIFICATION, 0)
-                updateStreamVolume(AudioManager.STREAM_ALARM, 0)
+        try {
+            when (mode) {
+                AudioMode.MUTE -> {
+                    updateStreamVolume(AudioManager.STREAM_MUSIC, 0)
+                    updateStreamVolume(AudioManager.STREAM_RING, 0)
+                    updateStreamVolume(AudioManager.STREAM_NOTIFICATION, 0)
+                    updateStreamVolume(AudioManager.STREAM_ALARM, 0)
+                }
+                AudioMode.VIBRATE -> {
+                    try {
+                        audioManager.ringerMode = AudioManager.RINGER_MODE_VIBRATE
+                    } catch (t: Throwable) {
+                        t.printStackTrace()
+                        Handler(Looper.getMainLooper()).post {
+                            try {
+                                android.widget.Toast.makeText(
+                                    applicationContext,
+                                    "Do Not Disturb access is required to change Ringer Mode!",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            } catch (error: Throwable) {}
+                        }
+                    }
+                    updateStreamVolume(AudioManager.STREAM_MUSIC, 0)
+                    updateStreamVolume(AudioManager.STREAM_RING, 0)
+                }
+                AudioMode.BOOST -> {
+                    try {
+                        audioManager.ringerMode = AudioManager.RINGER_MODE_NORMAL
+                    } catch (t: Throwable) {
+                        t.printStackTrace()
+                        Handler(Looper.getMainLooper()).post {
+                            try {
+                                android.widget.Toast.makeText(
+                                    applicationContext,
+                                    "Do Not Disturb access is required to change Ringer Mode!",
+                                    android.widget.Toast.LENGTH_LONG
+                                ).show()
+                            } catch (error: Throwable) {}
+                        }
+                    }
+                    updateStreamVolume(AudioManager.STREAM_MUSIC, maxMediaVolume.value)
+                    updateStreamVolume(AudioManager.STREAM_RING, maxRingVolume.value)
+                    updateStreamVolume(AudioManager.STREAM_NOTIFICATION, maxNotificationVolume.value)
+                    updateStreamVolume(AudioManager.STREAM_ALARM, maxAlarmVolume.value)
+                }
             }
-            AudioMode.VIBRATE -> {
-                audioManager.ringerMode = AudioManager.RINGER_MODE_VIBRATE
-                updateStreamVolume(AudioManager.STREAM_MUSIC, 0)
-                updateStreamVolume(AudioManager.STREAM_RING, 0)
-            }
-            AudioMode.BOOST -> {
-                audioManager.ringerMode = AudioManager.RINGER_MODE_NORMAL
-                updateStreamVolume(AudioManager.STREAM_MUSIC, maxMediaVolume.value)
-                updateStreamVolume(AudioManager.STREAM_RING, maxRingVolume.value)
-                updateStreamVolume(AudioManager.STREAM_NOTIFICATION, maxNotificationVolume.value)
-                updateStreamVolume(AudioManager.STREAM_ALARM, maxAlarmVolume.value)
-            }
+        } catch (t: Throwable) {
+            t.printStackTrace()
         }
     }
 
