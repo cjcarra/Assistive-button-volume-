@@ -83,10 +83,29 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun isOverlayPermissionGranted(context: Context): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Settings.canDrawOverlays(context)
-        } else {
-            true
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
+                val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    appOps.unsafeCheckOpNoThrow(
+                        android.app.AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW,
+                        android.os.Process.myUid(),
+                        context.packageName
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    appOps.checkOpNoThrow(
+                        android.app.AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW,
+                        android.os.Process.myUid(),
+                        context.packageName
+                    )
+                }
+                mode == android.app.AppOpsManager.MODE_ALLOWED
+            } else {
+                true
+            }
+        } catch (t: Throwable) {
+            false
         }
     }
 

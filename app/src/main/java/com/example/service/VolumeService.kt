@@ -220,16 +220,43 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
                 if (settings.lastPositionX != -1 && settings.lastPositionY != -1) {
                     params.x = settings.lastPositionX
                     params.y = settings.lastPositionY
-                    val displayMetrics = resources.displayMetrics
-                    sideIsLeftState.value = params.x + (settings.buttonSize * 3) / 2 < displayMetrics.widthPixels / 2
+                    val (screenWidth, _) = getRealScreenSize()
+                    sideIsLeftState.value = params.x + (settings.buttonSize * 3) / 2 < screenWidth / 2
                     tryUpdateWindowLayout()
                 }
             }
         }
     }
 
+    private fun isOverlayPermissionGranted(): Boolean {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                val appOps = getSystemService(Context.APP_OPS_SERVICE) as android.app.AppOpsManager
+                val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    appOps.unsafeCheckOpNoThrow(
+                        android.app.AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW,
+                        android.os.Process.myUid(),
+                        packageName
+                    )
+                } else {
+                    @Suppress("DEPRECATION")
+                    appOps.checkOpNoThrow(
+                        android.app.AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW,
+                        android.os.Process.myUid(),
+                        packageName
+                    )
+                }
+                mode == android.app.AppOpsManager.MODE_ALLOWED
+            } else {
+                true
+            }
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
     private fun setupOverlayWindow() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !android.provider.Settings.canDrawOverlays(this)) {
+        if (!isOverlayPermissionGranted()) {
             android.util.Log.e("VolumeService", "Overlay permission not granted. Stopping service.")
             serviceScope.launch {
                 repository.setServiceRunning(false)
@@ -255,8 +282,12 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = resources.displayMetrics.widthPixels - sizePx
-            y = resources.displayMetrics.heightPixels / 2 - sizePx
+            val (screenWidth, screenHeight) = getRealScreenSize()
+            x = screenWidth - sizePx
+            y = screenHeight / 2 - sizePx
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
         }
 
         sideIsLeftState.value = false
@@ -328,9 +359,8 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
     }
 
     private fun snapToNearestEdge(currentX: Int, currentY: Int, fromIdle: Boolean = false) {
+        val (screenWidth, screenHeight) = getRealScreenSize()
         val displayMetrics = resources.displayMetrics
-        val screenWidth = displayMetrics.widthPixels
-        val screenHeight = displayMetrics.heightPixels
         val settings = appSettingsFlow.value
         val sizeVal = settings.buttonSize
         val dockedVal = settings.dockedButtonSize
@@ -474,9 +504,8 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
                 .size(buttonSize.dp)
                 .alpha(animatedAlpha)
                 .pointerInput(settings.id) {
-                    val displayMetrics = resources.displayMetrics
-                    val screenWidth = displayMetrics.widthPixels
-                    val density = displayMetrics.density
+                    val (screenWidth, _) = getRealScreenSize()
+                    val density = resources.displayMetrics.density
                     val sizePx = (buttonSize * density).toInt()
 
                     detectDragGestures(
@@ -510,9 +539,8 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
                     )
                 }
                 .pointerInput(settings.selectedTheme) {
-                    val displayMetrics = resources.displayMetrics
-                    val screenWidth = displayMetrics.widthPixels
-                    val density = displayMetrics.density
+                    val (screenWidth, _) = getRealScreenSize()
+                    val density = resources.displayMetrics.density
                     val sizePx = (buttonSize * density).toInt()
 
                     detectTapGestures {
@@ -988,6 +1016,26 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
 
         serviceScope.cancel()
         handler.removeCallbacksAndMessages(null)
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        snapToNearestEdge(params.x, params.y, fromIdle = isIdleState.value)
+    }
+
+    private fun getRealScreenSize(): Pair<Int, Int> {
+        val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val metrics = wm.currentWindowMetrics
+            val bounds = metrics.bounds
+            Pair(bounds.width(), bounds.height())
+        } else {
+            val display = @Suppress("DEPRECATION") wm.defaultDisplay
+            val point = android.graphics.Point()
+            @Suppress("DEPRECATION")
+            display.getRealSize(point)
+            Pair(point.x, point.y)
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
