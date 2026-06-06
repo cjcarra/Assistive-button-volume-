@@ -76,9 +76,18 @@ fun MainScreen(viewModel: SettingsViewModel) {
     val settings by viewModel.settingsState.collectAsStateWithLifecycle()
     var isPermissionGranted by remember { mutableStateOf(false) }
 
-    // Recheck permission state periodically/initially
-    LaunchedEffect(key1 = Unit) {
-        isPermissionGranted = viewModel.isOverlayPermissionGranted(context)
+    // Recheck permission state on initialization and on every resume
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                isPermissionGranted = viewModel.isOverlayPermissionGranted(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     val activeTheme = remember(settings.selectedTheme) {
@@ -482,53 +491,134 @@ fun LivePreviewCard(settings: AppSettings, activeTheme: AppThemePreset) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                text = "Preset Button Live Preview",
+                text = "Preset Button Live Previews",
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold,
                 color = activeTheme.onSurface.copy(alpha = 0.82f),
                 modifier = Modifier.align(Alignment.Start)
             )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            // Simulated Circular Button using actual configuration parameters!
-            Box(
-                modifier = Modifier
-                    .size(settings.buttonSize.dp)
-                    .alpha(settings.opacityActive)
-                    .shadow(
-                        elevation = 8.dp,
-                        shape = CircleShape,
-                        ambientColor = activeTheme.shadowColor.copy(alpha = 0.35f),
-                        spotColor = activeTheme.primary.copy(alpha = 0.15f)
-                    )
-                    .clip(CircleShape)
-                    .background(activeTheme.glassBg)
-                    .border(BorderStroke(1.2.dp, activeTheme.glassBorder), CircleShape)
-                    .padding(3.dp)
-                    .clip(CircleShape)
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                activeTheme.primary.copy(alpha = 0.95f),
-                                activeTheme.accent.copy(alpha = 0.85f)
-                            )
-                        )
-                    ),
-                contentAlignment = Alignment.Center
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Default.VolumeUp,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size((settings.buttonSize * 0.45).dp)
-                )
+                // Active / Floating Preview
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Active (Floating)",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = activeTheme.onSurface.copy(alpha = 0.6f),
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(110.dp)
+                            .background(activeTheme.onSurface.copy(alpha = 0.04f), RoundedCornerShape(12.dp))
+                            .border(BorderStroke(1.dp, activeTheme.glassBorder), RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(settings.buttonSize.dp)
+                                .alpha(settings.opacityActive)
+                                .shadow(
+                                    elevation = 6.dp,
+                                    shape = RoundedCornerShape(12.dp),
+                                    ambientColor = activeTheme.shadowColor.copy(alpha = 0.3f)
+                                )
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            activeTheme.primary,
+                                            activeTheme.accent
+                                        )
+                                    )
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VolumeUp,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size((settings.buttonSize * 0.45).dp)
+                            )
+                        }
+                    }
+                }
+
+                // Docked / Idle Preview
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Docked (Idle)",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = activeTheme.onSurface.copy(alpha = 0.6f),
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(110.dp)
+                            .background(activeTheme.onSurface.copy(alpha = 0.04f), RoundedCornerShape(12.dp))
+                            .border(BorderStroke(1.dp, activeTheme.glassBorder), RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        // Vertical screen edge marker on the left
+                        Box(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .width(2.dp)
+                                .background(activeTheme.primary.copy(alpha = 0.5f))
+                        )
+
+                        // Docked Button: rectangular & aligned to start (simulated edge)
+                        Box(
+                            modifier = Modifier
+                                .width(settings.dockedButtonSize.dp)
+                                .height(settings.buttonSize.dp)
+                                .alpha(settings.opacityIdle)
+                                .shadow(
+                                    elevation = 3.dp,
+                                    shape = RoundedCornerShape(topStart = 0.dp, bottomStart = 0.dp, topEnd = 6.dp, bottomEnd = 6.dp),
+                                    ambientColor = activeTheme.shadowColor.copy(alpha = 0.2f)
+                                )
+                                .clip(RoundedCornerShape(topStart = 0.dp, bottomStart = 0.dp, topEnd = 6.dp, bottomEnd = 6.dp))
+                                .background(
+                                    Brush.verticalGradient(
+                                        colors = listOf(
+                                            activeTheme.primary,
+                                            activeTheme.accent
+                                        )
+                                    )
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.VolumeUp,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size((settings.dockedButtonSize * 0.6).coerceAtMost(settings.buttonSize * 0.35).dp)
+                            )
+                        }
+                    }
+                }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "Simulated size of ${settings.buttonSize}dp at ${ (settings.opacityActive * 100).roundToInt() }% opacity",
+                text = "Size: Active = ${settings.buttonSize}dp, Docked = ${settings.dockedButtonSize}dp",
                 fontSize = 12.sp,
                 color = activeTheme.onSurface.copy(alpha = 0.6f)
             )
@@ -665,7 +755,7 @@ fun VolumeMixerCard(
                 label = "Ringtone Sound",
                 icon = Icons.Default.RingVolume,
                 value = ringVol,
-                maxValue = maxMediaVol, // Using safe scale bounding
+                maxValue = maxRingVol,
                 activeTheme = activeTheme,
                 onValueChange = onRingChange
             )
@@ -676,7 +766,7 @@ fun VolumeMixerCard(
                 label = "Notifications",
                 icon = Icons.Default.Notifications,
                 value = notifVol,
-                maxValue = maxMediaVol,
+                maxValue = maxNotifVol,
                 activeTheme = activeTheme,
                 onValueChange = onNotifChange
             )
@@ -706,23 +796,38 @@ fun VolumeMixerSliderItem(
 ) {
     val haptic = LocalHapticFeedback.current
     val actualMax = maxValue.coerceAtLeast(1)
+    val isMuted = value == 0
+    var prevVolume by androidx.compose.runtime.saveable.rememberSaveable(label) { mutableStateOf(actualMax / 2) }
 
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = icon,
-            contentDescription = null,
-            tint = activeTheme.primary,
-            modifier = Modifier.size(20.dp)
-        )
+        IconButton(
+            onClick = {
+                if (isMuted) {
+                    onValueChange(prevVolume.coerceIn(1, actualMax))
+                } else {
+                    prevVolume = value
+                    onValueChange(0)
+                }
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            },
+            modifier = Modifier.size(38.dp)
+        ) {
+            Icon(
+                imageVector = if (isMuted) Icons.Default.VolumeOff else icon,
+                contentDescription = "Toggle Mute for $label",
+                tint = if (isMuted) activeTheme.onSurface.copy(alpha = 0.40f) else activeTheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
 
-        Spacer(modifier = Modifier.width(10.dp))
+        Spacer(modifier = Modifier.width(8.dp))
 
         Column(modifier = Modifier.weight(1f)) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(text = label, fontSize = 12.sp, color = activeTheme.onSurface.copy(alpha = 0.8f))
@@ -735,6 +840,9 @@ fun VolumeMixerSliderItem(
                 onValueChange = {
                     val target = it.roundToInt()
                     if (target != value) {
+                        if (target > 0) {
+                            prevVolume = target
+                        }
                         onValueChange(target)
                     }
                 },
@@ -789,6 +897,24 @@ fun InteractiveSettingsCard(
                 value = settings.buttonSize.toFloat(),
                 valueRange = 40f..80f,
                 onValueChange = { viewModel.updateButtonSize(it.roundToInt()) },
+                colors = SliderDefaults.colors(
+                    activeTrackColor = activeTheme.primary,
+                    thumbColor = activeTheme.accent
+                )
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Button docked size customizer
+            Text(
+                text = "Button Docked Size: ${settings.dockedButtonSize}dp",
+                fontSize = 12.sp,
+                color = activeTheme.onSurface.copy(alpha = 0.7f)
+            )
+            Slider(
+                value = settings.dockedButtonSize.toFloat(),
+                valueRange = 10f..40f,
+                onValueChange = { viewModel.updateDockedButtonSize(it.roundToInt()) },
                 colors = SliderDefaults.colors(
                     activeTrackColor = activeTheme.primary,
                     thumbColor = activeTheme.accent

@@ -46,6 +46,12 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun updateDockedButtonSize(size: Int) {
+        viewModelScope.launch {
+            repository.updateSettings { it.copy(dockedButtonSize = size) }
+        }
+    }
+
     fun updateOpacityActive(opacity: Float) {
         viewModelScope.launch {
             repository.updateSettings { it.copy(opacityActive = opacity) }

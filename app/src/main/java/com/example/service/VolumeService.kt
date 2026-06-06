@@ -85,6 +85,9 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
     // --- State Flow bindings for Reactive UI ---
     private val appSettingsFlow = MutableStateFlow(AppSettings())
     private var params = WindowManager.LayoutParams()
+    private var lastButtonX = -1
+    private var lastButtonY = -1
+    private val previousVolumes = mutableMapOf<Int, Int>()
 
     private val handler = Handler(Looper.getMainLooper())
     private var idleRunnable: Runnable? = null
@@ -121,6 +124,8 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
         // Initialize simple custom state and lifecycle
         savedStateRegistryController.performRestore(null)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
 
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -254,11 +259,23 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
 
     private fun updateWindowDimensions(expanded: Boolean) {
         if (expanded) {
+            // Save current position of the floating button before expanding to full-screen
+            lastButtonX = params.x
+            lastButtonY = params.y
+
+            // Center-align the full-screen window securely by resetting x and y
+            params.x = 0
+            params.y = 0
             params.width = WindowManager.LayoutParams.MATCH_PARENT
             params.height = WindowManager.LayoutParams.MATCH_PARENT
             // Enable touch watch to dismiss on touch outside card bounds
             params.flags = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
         } else {
+            // Restore previous position of the floating button
+            if (lastButtonX != -1 && lastButtonY != -1) {
+                params.x = lastButtonX
+                params.y = lastButtonY
+            }
             params.width = WindowManager.LayoutParams.WRAP_CONTENT
             params.height = WindowManager.LayoutParams.WRAP_CONTENT
             params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
@@ -270,32 +287,37 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
     private fun resetIdleTimer() {
         idleRunnable?.let { handler.removeCallbacks(it) }
         isIdleState.value = false
-        val timeoutMs = appSettingsFlow.value.idleTimeoutSeconds * 1000L
+        val timeoutMs = 5000L // Hard limit of 5 seconds to dock as requested
         idleRunnable = Runnable {
-            if (!isExpandedState.value && appSettingsFlow.value.hideToCornerWhenIdle) {
+            if (!isExpandedState.value) {
                 isIdleState.value = true
+                snapToNearestEdge(params.x, params.y, fromIdle = true)
             }
         }
         handler.postDelayed(idleRunnable!!, timeoutMs)
     }
 
-    private fun snapToNearestEdge(currentX: Int, currentY: Int) {
+    private fun snapToNearestEdge(currentX: Int, currentY: Int, fromIdle: Boolean = false) {
         val displayMetrics = resources.displayMetrics
         val screenWidth = displayMetrics.widthPixels
         val screenHeight = displayMetrics.heightPixels
-        val sizeVal = appSettingsFlow.value.buttonSize
+        val settings = appSettingsFlow.value
+        val sizeVal = settings.buttonSize
+        val dockedVal = settings.dockedButtonSize
         val density = displayMetrics.density
         val sizePx = (sizeVal * density).toInt()
+        val dockedPx = (dockedVal * density).toInt()
+        val hidePx = sizePx - dockedPx
 
         // Constraint within screen safe boundaries
         val safeY = currentY.coerceIn(100, screenHeight - sizePx - 100)
 
         val targetX = if (currentX + sizePx / 2 < screenWidth / 2) {
             sideIsLeftState.value = true
-            0
+            if (fromIdle) -hidePx else 0
         } else {
             sideIsLeftState.value = false
-            screenWidth - sizePx
+            if (fromIdle) screenWidth - dockedPx else screenWidth - sizePx
         }
 
         // Animate coordinate snap smoothly
@@ -322,7 +344,9 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
             repository.updateSettings {
                 it.copy(lastPositionX = params.x, lastPositionY = params.y)
             }
-            resetIdleTimer()
+            if (!fromIdle) {
+                resetIdleTimer()
+            }
         }
     }
 
@@ -337,9 +361,15 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
             AppThemePreset.fromName(settings.selectedTheme)
         }
 
+        val rootModifier = if (isExpanded) {
+            Modifier.fillMaxSize()
+        } else {
+            Modifier.size(settings.buttonSize.dp)
+        }
+
         MaterialTheme(colorScheme = activeTheme.toColorScheme()) {
             Box(
-                modifier = Modifier.fillMaxSize(),
+                modifier = rootModifier,
                 contentAlignment = if (isExpanded) Alignment.Center else Alignment.TopStart
             ) {
                 if (isExpanded) {
@@ -380,19 +410,8 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
         val haptic = LocalHapticFeedback.current
         var isDragging by remember { mutableStateOf(false) }
 
-        // Slide partially off-screen if idle, using animated offsets
         val buttonSize = settings.buttonSize
-        val targetOffset = if (isIdle) {
-            if (sideIsLeft) -buttonSize * 0.55f else buttonSize * 0.55f
-        } else {
-            0f
-        }
-
-        val animatedOffset by animateFloatAsState(
-            targetValue = targetOffset,
-            animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessLow),
-            label = "idle_slide"
-        )
+        val dockedButtonSize = settings.dockedButtonSize
 
         val animatedAlpha by animateFloatAsState(
             targetValue = if (isIdle) settings.opacityIdle else settings.opacityActive,
@@ -400,24 +419,49 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
             label = "idle_alpha"
         )
 
+        // Choose beautiful edge-embracing rectangular tab shape when docked/idle
+        val buttonShape = if (isIdle) {
+            if (sideIsLeft) {
+                RoundedCornerShape(topStart = 0.dp, bottomStart = 0.dp, topEnd = 6.dp, bottomEnd = 6.dp)
+            } else {
+                RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp, topEnd = 0.dp, bottomEnd = 0.dp)
+            }
+        } else {
+            RoundedCornerShape(12.dp)
+        }
+
+        // Align the button content to the visible screen area when docked
+        val contentAlignment = if (isIdle) {
+            if (sideIsLeft) Alignment.CenterEnd else Alignment.CenterStart
+        } else {
+            Alignment.Center
+        }
+
+        val buttonWidth = if (isIdle) dockedButtonSize.dp else buttonSize.dp
+
         Box(
             modifier = Modifier
-                .offset {
-                    IntOffset(
-                        x = OffsetConversion.dpToPx(applicationContext, animatedOffset),
-                        y = 0
-                    )
-                }
                 .size(buttonSize.dp)
                 .alpha(animatedAlpha)
                 .pointerInput(settings.id) {
+                    val displayMetrics = resources.displayMetrics
+                    val screenWidth = displayMetrics.widthPixels
+                    val density = displayMetrics.density
+                    val sizePx = (buttonSize * density).toInt()
+
                     detectDragGestures(
                         onDragStart = {
                             isDragging = true
                             if (settings.hapticFeedback) {
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             }
-                            isIdleState.value = false
+                            if (isIdleState.value) {
+                                isIdleState.value = false
+                                val activeX = if (sideIsLeftState.value) 0 else screenWidth - sizePx
+                                params.x = activeX
+                                tryUpdateWindowLayout()
+                            }
+                            idleRunnable?.let { handler.removeCallbacks(it) }
                         },
                         onDragEnd = {
                             isDragging = false
@@ -436,45 +480,75 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
                     )
                 }
                 .pointerInput(settings.selectedTheme) {
+                    val displayMetrics = resources.displayMetrics
+                    val screenWidth = displayMetrics.widthPixels
+                    val density = displayMetrics.density
+                    val sizePx = (buttonSize * density).toInt()
+
                     detectTapGestures {
-                        if (settings.hapticFeedback) {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        if (isIdleState.value) {
+                            isIdleState.value = false
+                            val activeX = if (sideIsLeftState.value) 0 else screenWidth - sizePx
+                            params.x = activeX
+                            tryUpdateWindowLayout()
+                            resetIdleTimer()
+                            if (settings.hapticFeedback) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
+                        } else {
+                            if (settings.hapticFeedback) {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
+                            isExpandedState.value = true
+                            updateWindowDimensions(true)
                         }
-                        isExpandedState.value = true
-                        updateWindowDimensions(true)
                     }
                 }
-                .shadow(
-                    elevation = if (isDragging) 12.dp else 6.dp,
-                    shape = CircleShape,
-                    ambientColor = activeTheme.shadowColor,
-                    spotColor = activeTheme.primary
-                )
-                .clip(CircleShape)
-                .background(
-                    Brush.radialGradient(
-                        colors = listOf(activeTheme.surface, activeTheme.background),
-                        radius = 160f
+        ) {
+            // Inner visual rectangular tab button that aligns dynamically within parent window
+            Box(
+                modifier = Modifier
+                    .align(contentAlignment)
+                    .width(buttonWidth)
+                    .fillMaxHeight()
+                    .shadow(
+                        elevation = if (isDragging) 12.dp else 6.dp,
+                        shape = buttonShape,
+                        ambientColor = activeTheme.shadowColor,
+                        spotColor = activeTheme.primary
                     )
-                )
-                .padding(2.dp)
-                .shadow(elevation = 2.dp, shape = CircleShape)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            activeTheme.primary.copy(alpha = 0.9f),
-                            activeTheme.primary.copy(alpha = 0.7f)
+                    .clip(buttonShape)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(activeTheme.surface, activeTheme.background),
+                            radius = 160f
                         )
                     )
-                ),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(
-                imageVector = Icons.Default.VolumeUp,
-                contentDescription = "Adjust Volume",
-                tint = activeTheme.onSurface,
-                modifier = Modifier.size((buttonSize * 0.45).dp)
-            )
+                    .padding(2.dp)
+                    .shadow(elevation = 2.dp, shape = buttonShape)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                activeTheme.primary.copy(alpha = 0.9f),
+                                activeTheme.primary.copy(alpha = 0.7f)
+                            )
+                        )
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                val iconSize = if (isIdle) {
+                    (dockedButtonSize * 0.65).coerceAtMost(buttonSize * 0.35).dp
+                } else {
+                    (buttonSize * 0.45).dp
+                }
+
+                Icon(
+                    imageVector = Icons.Default.VolumeUp,
+                    contentDescription = "Adjust Volume",
+                    tint = activeTheme.onSurface,
+                    modifier = Modifier.size(iconSize)
+                )
+            }
         }
     }
 
@@ -587,7 +661,8 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
                     onValueChange = {
                         updateStreamVolume(AudioManager.STREAM_MUSIC, it)
                     },
-                    theme = activeTheme
+                    theme = activeTheme,
+                    streamType = AudioManager.STREAM_MUSIC
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -600,7 +675,8 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
                     onValueChange = {
                         updateStreamVolume(AudioManager.STREAM_RING, it)
                     },
-                    theme = activeTheme
+                    theme = activeTheme,
+                    streamType = AudioManager.STREAM_RING
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -613,7 +689,8 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
                     onValueChange = {
                         updateStreamVolume(AudioManager.STREAM_NOTIFICATION, it)
                     },
-                    theme = activeTheme
+                    theme = activeTheme,
+                    streamType = AudioManager.STREAM_NOTIFICATION
                 )
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -626,7 +703,8 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
                     onValueChange = {
                         updateStreamVolume(AudioManager.STREAM_ALARM, it)
                     },
-                    theme = activeTheme
+                    theme = activeTheme,
+                    streamType = AudioManager.STREAM_ALARM
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -675,7 +753,8 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
         value: Int,
         maxValue: Int,
         onValueChange: (Int) -> Unit,
-        theme: AppThemePreset
+        theme: AppThemePreset,
+        streamType: Int
     ) {
         val haptic = LocalHapticFeedback.current
         val isMuted = value == 0
@@ -687,8 +766,10 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
             IconButton(
                 onClick = {
                     if (isMuted) {
-                        onValueChange(maxValue / 2)
+                        val prev = previousVolumes[streamType] ?: (maxValue / 2)
+                        onValueChange(prev.coerceIn(1, maxValue))
                     } else {
+                        previousVolumes[streamType] = value
                         onValueChange(0)
                     }
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -696,7 +777,7 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
             ) {
                 Icon(
                     imageVector = if (isMuted) Icons.Default.VolumeOff else icon,
-                    contentDescription = "Toggle Mute",
+                    contentDescription = "Toggle Mute for $title",
                     tint = if (isMuted) theme.onSurface.copy(alpha = 0.4f) else theme.primary
                 )
             }
@@ -726,6 +807,9 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
                     onValueChange = {
                         val intVal = it.roundToInt()
                         if (intVal != value) {
+                            if (intVal > 0) {
+                                previousVolumes[streamType] = intVal
+                            }
                             onValueChange(intVal)
                         }
                     },
@@ -811,6 +895,7 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
 
     override fun onDestroy() {
         super.onDestroy()
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
         store.clear()
 
