@@ -194,6 +194,15 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
     }
 
     private fun setupOverlayWindow() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !android.provider.Settings.canDrawOverlays(this)) {
+            android.util.Log.e("VolumeService", "Overlay permission not granted. Stopping service.")
+            serviceScope.launch {
+                repository.setServiceRunning(false)
+            }
+            stopSelf()
+            return
+        }
+
         val sizeVal = appSettingsFlow.value.buttonSize
         val density = resources.displayMetrics.density
         val sizePx = (sizeVal * density).toInt()
@@ -210,7 +219,7 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.CENTER_VERTICAL or Gravity.START
+            gravity = Gravity.TOP or Gravity.START
             x = resources.displayMetrics.widthPixels - sizePx
             y = resources.displayMetrics.heightPixels / 2 - sizePx
         }
@@ -391,15 +400,12 @@ class VolumeService : Service(), LifecycleOwner, ViewModelStoreOwner, SavedState
             label = "idle_alpha"
         )
 
-        val finalX = params.x
-        val finalY = params.y
-
         Box(
             modifier = Modifier
                 .offset {
                     IntOffset(
-                        x = finalX + OffsetConversion.dpToPx(applicationContext, animatedOffset),
-                        y = finalY
+                        x = OffsetConversion.dpToPx(applicationContext, animatedOffset),
+                        y = 0
                     )
                 }
                 .size(buttonSize.dp)
